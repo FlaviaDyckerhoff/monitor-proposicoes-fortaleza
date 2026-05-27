@@ -5,6 +5,15 @@ on:
     - cron: '10 11 * * *'   # 08:10 BRT
     - cron: '10 19 * * *'   # 16:10 BRT
   workflow_dispatch:
+    inputs:
+      catchup_from:
+        description: 'Data inicial do catch-up (YYYY-MM-DD)'
+        required: false
+        default: ''
+      email_destino_override:
+        description: 'Destino temporário do email'
+        required: false
+        default: ''
 
 jobs:
   monitorar:
@@ -31,6 +40,8 @@ jobs:
           EMAIL_REMETENTE: ${{ secrets.EMAIL_REMETENTE }}
           EMAIL_SENHA: ${{ secrets.EMAIL_SENHA }}
           EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
+          EMAIL_DESTINO_OVERRIDE: ${{ github.event.inputs.email_destino_override }}
+          CATCHUP_FROM: ${{ github.event.inputs.catchup_from }}
         run: node monitor.js
 
       - name: Salvar estado atualizado no repositório

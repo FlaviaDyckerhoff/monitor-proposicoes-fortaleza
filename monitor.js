@@ -1,11 +1,12 @@
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 
-const EMAIL_DESTINO = process.env.EMAIL_DESTINO;
+const EMAIL_DESTINO = process.env.EMAIL_DESTINO_OVERRIDE || process.env.EMAIL_DESTINO;
 const EMAIL_REMETENTE = process.env.EMAIL_REMETENTE;
 const EMAIL_SENHA = process.env.EMAIL_SENHA;
 const ARQUIVO_ESTADO = 'estado.json';
 const API_BASE = 'https://sapl.fortaleza.ce.leg.br/api';
+const CATCHUP_FROM = process.env.CATCHUP_FROM || '';
 
 function carregarEstado() {
   if (fs.existsSync(ARQUIVO_ESTADO))
@@ -78,25 +79,78 @@ async function enviarEmail(novas) {
   console.log(`✅ Email enviado com ${novas.length} matérias novas.`);
 }
 
+async function buscarPaginaMaterias(ano, page, pageSize) {
+  const url = `${API_BASE}/materia/materialegislativa/?ano=${ano}&page=${page}&page_size=${pageSize}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    console.error(`❌ Erro na API: ${response.status} ${response.statusText} em page=${page}`);
+    return [];
+  }
+  const json = await response.json();
+  return json.results || [];
+}
+
 async function buscarProposicoes() {
   const ano = new Date().getFullYear();
-  const url = `${API_BASE}/materia/materialegislativa/?ano=${ano}&page=1&page_size=100&ordering=-id`;
+  const pageSize = 100;
+  const primeiraUrl = `${API_BASE}/materia/materialegislativa/?ano=${ano}&page=1&page_size=${pageSize}`;
 
   console.log(`🔍 Buscando matérias de ${ano}...`);
-  console.log(`📡 URL: ${url}`);
+  console.log(`📡 URL inicial: ${primeiraUrl}`);
 
-  const response = await fetch(url);
+  const primeiraResponse = await fetch(primeiraUrl);
 
-  if (!response.ok) {
-    console.error(`❌ Erro na API: ${response.status} ${response.statusText}`);
+  if (!primeiraResponse.ok) {
+    console.error(`❌ Erro na API: ${primeiraResponse.status} ${primeiraResponse.statusText}`);
     return [];
   }
 
-  const json = await response.json();
-  const total = json.pagination?.total_entries || json.count || '?';
-  console.log(`📦 Total no ano: ${total}, recebidos: ${json.results?.length}`);
+  const primeiraJson = await primeiraResponse.json();
+  const total = primeiraJson.pagination?.total_entries || primeiraJson.count || (primeiraJson.results || []).length;
+  const totalPaginas = Math.max(1, Math.ceil(Number(total) / pageSize));
+  const paginas = Array.from(new Set([Math.max(1, totalPaginas - 1), totalPaginas]));
 
-  return json.results || [];
+  console.log(`📦 Total no ano: ${total}; última página estimada: ${totalPaginas}`);
+
+  if (CATCHUP_FROM) {
+    console.log(`📥 Modo catch-up ativo desde ${CATCHUP_FROM}`);
+    const resultados = [];
+    for (let page = totalPaginas; page >= 1; page--) {
+      const pagina = await buscarPaginaMaterias(ano, page, pageSize);
+      resultados.push(...pagina.filter(item => String(item.data_apresentacao || '').slice(0, 10) >= CATCHUP_FROM));
+      const datas = pagina
+        .map(item => String(item.data_apresentacao || '').slice(0, 10))
+        .filter(Boolean)
+        .sort();
+      if (datas[0] && datas[0] < CATCHUP_FROM) break;
+    }
+    const unicos = new Map();
+    for (const item of resultados) {
+      if (item && item.id) unicos.set(String(item.id), item);
+    }
+    const recentes = Array.from(unicos.values())
+      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    console.log(`📦 Catch-up coletado: ${recentes.length} matéria(s)`);
+    return recentes;
+  }
+
+  console.log(`📡 Páginas recentes: ${paginas.join(', ')}`);
+
+  const resultados = [];
+  for (const page of paginas) {
+    resultados.push(...await buscarPaginaMaterias(ano, page, pageSize));
+  }
+
+  const unicos = new Map();
+  for (const item of resultados) {
+    if (item && item.id) unicos.set(String(item.id), item);
+  }
+  const recentes = Array.from(unicos.values())
+    .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))
+    .slice(0, pageSize);
+
+  console.log(`📦 Recebidos nas páginas recentes: ${resultados.length}; únicos: ${unicos.size}; monitorando últimos: ${recentes.length}`);
+  return recentes;
 }
 
 function normalizarProposicao(p) {
@@ -120,6 +174,7 @@ function normalizarProposicao(p) {
 (async () => {
   console.log('🚀 Iniciando monitor CMFor...');
   console.log(`⏰ ${new Date().toLocaleString('pt-BR')}`);
+  if (CATCHUP_FROM) console.log(`📥 Catch-up solicitado desde ${CATCHUP_FROM}`);
 
   const estado = carregarEstado();
   const idsVistos = new Set(estado.proposicoes_vistas.map(String));
