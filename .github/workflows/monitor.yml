@@ -2,8 +2,7 @@ name: Monitor Matérias CMFor
 
 on:
   schedule:
-    - cron: '10 11 * * *'   # 08:10 BRT
-    - cron: '10 19 * * *'   # 16:10 BRT
+    - cron: '36 9 * * *'   # 06:36 BRT
   workflow_dispatch:
     inputs:
       catchup_from:
