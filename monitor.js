@@ -1,5 +1,4 @@
 const fs = require('fs');
-const nodemailer = require('nodemailer');
 
 const EMAIL_DESTINO = process.env.EMAIL_DESTINO_OVERRIDE || process.env.EMAIL_DESTINO;
 const EMAIL_REMETENTE = process.env.EMAIL_REMETENTE;
@@ -7,6 +6,23 @@ const EMAIL_SENHA = process.env.EMAIL_SENHA;
 const ARQUIVO_ESTADO = 'estado.json';
 const API_BASE = 'https://sapl.fortaleza.ce.leg.br/api';
 const CATCHUP_FROM = process.env.CATCHUP_FROM || '';
+const BASELINE_ONLY = process.env.BASELINE_ONLY === '1';
+const PAGE_SIZE = 100;
+const LATEST_PAGES = Number(process.env.LATEST_PAGES || 2);
+
+const TIPOS_PRINCIPAIS = [
+  { id: 1, sigla: 'PLO' },
+  { id: 5, sigla: 'PLC' },
+  { id: 6, sigla: 'PDL' },
+  { id: 9, sigla: 'PEL' },
+  { id: 13, sigla: 'PIP' },
+  { id: 2, sigla: 'PRE' },
+  { id: 4, sigla: 'REC' },
+  { id: 11, sigla: 'VET' },
+  { id: 10, sigla: 'MSG' },
+  { id: 8, sigla: 'IND' },
+  { id: 3, sigla: 'REQ' },
+];
 
 function carregarEstado() {
   if (fs.existsSync(ARQUIVO_ESTADO))
@@ -19,6 +35,7 @@ function salvarEstado(estado) {
 }
 
 async function enviarEmail(novas) {
+  const nodemailer = require('nodemailer');
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: EMAIL_REMETENTE, pass: EMAIL_SENHA },
@@ -79,20 +96,43 @@ async function enviarEmail(novas) {
   console.log(`✅ Email enviado com ${novas.length} matérias novas.`);
 }
 
-async function buscarPaginaMaterias(ano, page, pageSize) {
-  const url = `${API_BASE}/materia/materialegislativa/?ano=${ano}&page=${page}&page_size=${pageSize}`;
+async function buscarPaginaMaterias(ano, page, pageSize, tipoId = null) {
+  const url = new URL(`${API_BASE}/materia/materialegislativa/`);
+  url.searchParams.set('ano', String(ano));
+  url.searchParams.set('page', String(page));
+  url.searchParams.set('page_size', String(pageSize));
+  if (tipoId) url.searchParams.set('tipo', String(tipoId));
+
   const response = await fetch(url);
   if (!response.ok) {
     console.error(`❌ Erro na API: ${response.status} ${response.statusText} em page=${page}`);
-    return [];
+    return { results: [], totalPaginas: 1, total: 0 };
   }
   const json = await response.json();
-  return json.results || [];
+  const total = json.pagination?.total_entries || json.count || (json.results || []).length;
+  const totalPaginas = json.pagination?.total_pages || Math.max(1, Math.ceil(Number(total) / pageSize));
+  return { results: json.results || [], totalPaginas, total };
+}
+
+async function buscarUltimasPaginasPorTipo(ano, pageSize, tipoId, label) {
+  const primeira = await buscarPaginaMaterias(ano, 1, pageSize, tipoId);
+  const start = Math.max(1, primeira.totalPaginas - LATEST_PAGES + 1);
+  const resultados = [];
+  const paginas = [];
+
+  for (let page = start; page <= primeira.totalPaginas; page++) {
+    paginas.push(page);
+    const pagina = page === 1 ? primeira : await buscarPaginaMaterias(ano, page, pageSize, tipoId);
+    resultados.push(...pagina.results);
+  }
+
+  console.log(`📡 ${label}: páginas ${paginas.join(', ')} de ${primeira.totalPaginas}; recebidos ${resultados.length}`);
+  return resultados;
 }
 
 async function buscarProposicoes() {
   const ano = new Date().getFullYear();
-  const pageSize = 100;
+  const pageSize = PAGE_SIZE;
   const primeiraUrl = `${API_BASE}/materia/materialegislativa/?ano=${ano}&page=1&page_size=${pageSize}`;
 
   console.log(`🔍 Buscando matérias de ${ano}...`);
@@ -108,7 +148,6 @@ async function buscarProposicoes() {
   const primeiraJson = await primeiraResponse.json();
   const total = primeiraJson.pagination?.total_entries || primeiraJson.count || (primeiraJson.results || []).length;
   const totalPaginas = Math.max(1, Math.ceil(Number(total) / pageSize));
-  const paginas = Array.from(new Set([Math.max(1, totalPaginas - 1), totalPaginas]));
 
   console.log(`📦 Total no ano: ${total}; última página estimada: ${totalPaginas}`);
 
@@ -117,8 +156,8 @@ async function buscarProposicoes() {
     const resultados = [];
     for (let page = totalPaginas; page >= 1; page--) {
       const pagina = await buscarPaginaMaterias(ano, page, pageSize);
-      resultados.push(...pagina.filter(item => String(item.data_apresentacao || '').slice(0, 10) >= CATCHUP_FROM));
-      const datas = pagina
+      resultados.push(...pagina.results.filter(item => String(item.data_apresentacao || '').slice(0, 10) >= CATCHUP_FROM));
+      const datas = pagina.results
         .map(item => String(item.data_apresentacao || '').slice(0, 10))
         .filter(Boolean)
         .sort();
@@ -134,22 +173,21 @@ async function buscarProposicoes() {
     return recentes;
   }
 
-  console.log(`📡 Páginas recentes: ${paginas.join(', ')}`);
-
   const resultados = [];
-  for (const page of paginas) {
-    resultados.push(...await buscarPaginaMaterias(ano, page, pageSize));
+
+  for (const tipo of TIPOS_PRINCIPAIS) {
+    resultados.push(...await buscarUltimasPaginasPorTipo(ano, pageSize, tipo.id, tipo.sigla));
   }
+  resultados.push(...await buscarUltimasPaginasPorTipo(ano, pageSize, null, 'GERAL'));
 
   const unicos = new Map();
   for (const item of resultados) {
     if (item && item.id) unicos.set(String(item.id), item);
   }
   const recentes = Array.from(unicos.values())
-    .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))
-    .slice(0, pageSize);
+    .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
 
-  console.log(`📦 Recebidos nas páginas recentes: ${resultados.length}; únicos: ${unicos.size}; monitorando últimos: ${recentes.length}`);
+  console.log(`📦 Recebidos nas janelas recentes: ${resultados.length}; únicos: ${unicos.size}; monitorando por tipo: ${recentes.length}`);
   return recentes;
 }
 
@@ -175,6 +213,7 @@ function normalizarProposicao(p) {
   console.log('🚀 Iniciando monitor CMFor...');
   console.log(`⏰ ${new Date().toLocaleString('pt-BR')}`);
   if (CATCHUP_FROM) console.log(`📥 Catch-up solicitado desde ${CATCHUP_FROM}`);
+  if (BASELINE_ONLY) console.log('🧭 Modo baseline ativo: marca matérias como vistas sem enviar email');
 
   const estado = carregarEstado();
   const idsVistos = new Set(estado.proposicoes_vistas.map(String));
@@ -192,7 +231,11 @@ function normalizarProposicao(p) {
   const novas = proposicoes.filter(p => !idsVistos.has(p.id));
   console.log(`🆕 Matérias novas: ${novas.length}`);
 
-  if (novas.length > 0) {
+  if (novas.length > 0 && BASELINE_ONLY) {
+    novas.forEach(p => idsVistos.add(p.id));
+    estado.proposicoes_vistas = Array.from(idsVistos);
+    console.log(`🧭 Baseline atualizado com ${novas.length} matéria(s), sem envio.`);
+  } else if (novas.length > 0) {
     novas.sort((a, b) => {
       if (a.tipo < b.tipo) return -1;
       if (a.tipo > b.tipo) return 1;
