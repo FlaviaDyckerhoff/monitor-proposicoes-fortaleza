@@ -13,6 +13,10 @@ on:
         description: 'Destino temporário do email'
         required: false
         default: ''
+      dry_run:
+        description: 'Rodar sem enviar email nem atualizar estado (1=sim)'
+        required: false
+        default: ''
 
 jobs:
   monitorar:
@@ -41,9 +45,11 @@ jobs:
           EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
           EMAIL_DESTINO_OVERRIDE: ${{ github.event.inputs.email_destino_override }}
           CATCHUP_FROM: ${{ github.event.inputs.catchup_from }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: node monitor.js
 
       - name: Salvar estado atualizado no repositório
+        if: ${{ github.event.inputs.dry_run != '1' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

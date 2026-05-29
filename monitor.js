@@ -7,6 +7,7 @@ const ARQUIVO_ESTADO = 'estado.json';
 const API_BASE = 'https://sapl.fortaleza.ce.leg.br/api';
 const CATCHUP_FROM = process.env.CATCHUP_FROM || '';
 const BASELINE_ONLY = process.env.BASELINE_ONLY === '1';
+const DRY_RUN = process.env.DRY_RUN === '1';
 const PAGE_SIZE = 100;
 const LATEST_PAGES = Number(process.env.LATEST_PAGES || 2);
 
@@ -249,6 +250,9 @@ function normalizarProposicao(p) {
     novas.forEach(p => idsVistos.add(p.id));
     estado.proposicoes_vistas = Array.from(idsVistos);
     console.log(`🧭 Baseline atualizado com ${novas.length} matéria(s), sem envio.`);
+  } else if (novas.length > 0 && DRY_RUN) {
+    const amostra = novas.slice(0, 5).map(p => `${p.tipo} ${p.numero}/${p.ano} -> ${p.url}`).join('\n');
+    console.log(`🧪 Dry-run ativo: email não enviado e estado não alterado. Amostra com links:\n${amostra}`);
   } else if (novas.length > 0) {
     novas.sort((a, b) => {
       if (a.tipo < b.tipo) return -1;
