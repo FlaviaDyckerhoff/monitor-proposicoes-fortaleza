@@ -34,6 +34,19 @@ function salvarEstado(estado) {
   fs.writeFileSync(ARQUIVO_ESTADO, JSON.stringify(estado, null, 2));
 }
 
+function escaparHtml(valor) {
+  return String(valor || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function montarUrlMateria(id) {
+  return `https://sapl.fortaleza.ce.leg.br/materia/${encodeURIComponent(String(id))}`;
+}
+
 async function enviarEmail(novas) {
   const nodemailer = require('nodemailer');
   const transporter = nodemailer.createTransport({
@@ -52,11 +65,11 @@ async function enviarEmail(novas) {
     const header = `<tr><td colspan="5" style="padding:10px 8px 4px;background:#f0f4f8;font-weight:bold;color:#1a3a5c;font-size:13px;border-top:2px solid #1a3a5c">${tipo} — ${porTipo[tipo].length} matéria(s)</td></tr>`;
     const rows = porTipo[tipo].map(p =>
       `<tr>
-        <td style="padding:8px;border-bottom:1px solid #eee;color:#555;font-size:12px">${p.tipo || '-'}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee"><strong>${p.numero || '-'}/${p.ano || '-'}</strong></td>
-        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${p.autor || '-'}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;white-space:nowrap">${p.data || '-'}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${p.ementa || '-'}</td>
+        <td style="padding:8px;border-bottom:1px solid #eee;color:#555;font-size:12px">${escaparHtml(p.tipo || '-')}</td>
+        <td style="padding:8px;border-bottom:1px solid #eee"><strong><a href="${escaparHtml(p.url)}">${escaparHtml(p.numero || '-')}/${escaparHtml(p.ano || '-')}</a></strong></td>
+        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${escaparHtml(p.autor || '-')}</td>
+        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;white-space:nowrap">${escaparHtml(p.data || '-')}</td>
+        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px">${escaparHtml(p.ementa || '-')}</td>
       </tr>`
     ).join('');
     return header + rows;
@@ -206,6 +219,7 @@ function normalizarProposicao(p) {
     autor: '-',
     data: p.data_apresentacao || '-',
     ementa: (p.ementa || '-').substring(0, 200),
+    url: montarUrlMateria(p.id),
   };
 }
 
