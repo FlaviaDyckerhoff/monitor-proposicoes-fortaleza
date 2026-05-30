@@ -103,7 +103,7 @@ async function enviarEmail(novas) {
   await transporter.sendMail({
     from: `"Monitor CMFor" <${EMAIL_REMETENTE}>`,
     to: EMAIL_DESTINO,
-    subject: `🏛️ CMFor: ${novas.length} nova(s) matéria(s) — ${new Date().toLocaleDateString('pt-BR')}`,
+    subject: `🏛️ Fortaleza: ${novas.length} nova(s) matéria(s) — ${new Date().toLocaleDateString('pt-BR')}`,
     html,
   });
 
