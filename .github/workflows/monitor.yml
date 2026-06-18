@@ -1,8 +1,6 @@
 name: Monitor Matérias CMFor
 
 on:
-  schedule:
-    - cron: '36 8 * * 1-5'   # 05:36 BRT
   workflow_dispatch:
     inputs:
       catchup_from:
