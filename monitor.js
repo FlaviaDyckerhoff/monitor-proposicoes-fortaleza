@@ -11,6 +11,11 @@ const CONTROLE03_STATE_URL = process.env.CONTROLE03_STATE_URL || new URL('api/st
 const CONTROLE03_API_USER = process.env.CONTROLE03_API_USER || '';
 const CONTROLE03_API_PASS = process.env.CONTROLE03_API_PASS || '';
 const CONTROLE03_BASIC_AUTH = process.env.CONTROLE03_BASIC_AUTH || '';
+const MONITOR_URL = (process.env.MONITOR_URL || 'https://monitorlegislativo.com.br').replace(/\/$/, '');
+const MONITOR_USER = process.env.MONITOR_USER || '';
+const MONITOR_PASS = process.env.MONITOR_PASS || '';
+const MONITOR_CASA = process.env.MONITOR_CASA || 'CE';
+const MONITOR_MUNICIPIO = process.env.MONITOR_MUNICIPIO || 'Fortaleza';
 
 const API_BASE = 'https://sapl.fortaleza.ce.leg.br/api';
 const CATCHUP_FROM = process.env.CATCHUP_FROM || '';
@@ -291,6 +296,86 @@ function radar03AuthHeaders() {
   return headers;
 }
 
+function normalizarNumeroMonitor(numero) {
+  const match = String(numero || '').match(/\d+/);
+  return match ? match[0] : String(numero || '').trim();
+}
+
+function radar03TipoMonitor(tipo) {
+  const canon = radar03TipoControle(tipo);
+  if (canon === 'PLO') return 'PL';
+  if (canon === 'PL') return 'PL';
+  return canon;
+}
+
+async function loginMonitor() {
+  if (!MONITOR_USER || !MONITOR_PASS) return '';
+  const resp = await fetch(MONITOR_URL + '/app/entrar/entra.php', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Referer: MONITOR_URL + '/app/entrar/',
+    },
+    body: new URLSearchParams({ usuario: MONITOR_USER, senha: MONITOR_PASS }),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(15000),
+  });
+  const cookie = resp.headers.get('set-cookie') || '';
+  return cookie.split(',').map(part => part.split(';')[0].trim()).filter(Boolean).join('; ');
+}
+
+async function buscarItemNoMonitor(det, cookie) {
+  if (!cookie) return null;
+  const params = new URLSearchParams({
+    numero: normalizarNumeroMonitor(det.numero),
+    ano: String(det.ano || '').slice(0, 4),
+    casa: MONITOR_CASA,
+    municipio: MONITOR_MUNICIPIO,
+    tipo: radar03TipoMonitor(det.tipo),
+    texto: '',
+    status: '',
+    sem_cliente: 'false',
+    tempo_real: 'false',
+    cod_cliente: '',
+    order_type: '',
+  });
+  const resp = await fetch(MONITOR_URL + '/app/proposicoes2/estados-municipios/lista.php?' + params.toString(), {
+    headers: { Cookie: cookie, Accept: 'application/json' },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!resp.ok) return null;
+  const data = await resp.json().catch(() => null);
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function enriquecerResumoComMonitor(resumo) {
+  let cookie = '';
+  try {
+    cookie = await loginMonitor();
+  } catch (err) {
+    console.warn('⚠️ Não foi possível autenticar no Monitor para cruzamento da 03: ' + err.message);
+  }
+  if (!cookie) {
+    console.warn('⚠️ Cruzamento Monitor/03 não executado: MONITOR_USER/MONITOR_PASS ausentes ou login sem cookie.');
+    return resumo;
+  }
+
+  for (const rec of resumo) {
+    try {
+      const monitorItem = await buscarItemNoMonitor(rec, cookie);
+      if (!monitorItem) continue;
+      rec.monitorIncorporado = true;
+      rec.monitorCodigo = String(monitorItem.codigo || monitorItem.id || '');
+      rec.monitorUrl = rec.monitorCodigo
+        ? MONITOR_URL + '/app/proposicoes2/estados-municipios/tramitacoes.php?codigo=' + encodeURIComponent(rec.monitorCodigo)
+        : '';
+    } catch (err) {
+      console.warn('⚠️ Falha no cruzamento Monitor para ' + rec.tipo + ' ' + rec.numero + '/' + rec.ano + ': ' + err.message);
+    }
+  }
+  return resumo;
+}
+
 function radar03AgruparNovidades(novas) {
   const porTipo = new Map();
   (novas || []).forEach(p => {
@@ -332,7 +417,7 @@ function radar03AgruparNovidades(novas) {
 }
 
 async function sincronizarRadar03(novas) {
-  const resumo = radar03AgruparNovidades(novas);
+  const resumo = await enriquecerResumoComMonitor(radar03AgruparNovidades(novas));
   if (!resumo.length) return;
   try {
     const getResp = await fetch(CONTROLE03_STATE_URL, { headers: radar03AuthHeaders() });
@@ -351,7 +436,7 @@ async function sincronizarRadar03(novas) {
     while (casa.week.length < 5) casa.week.push('off');
 
     resumo.forEach(rec => {
-      const detalhes = [rec];
+      const detalhes = rec.itens && rec.itens.length ? rec.itens : [rec];
       const existentesTipo = casa.items.filter(i => radar03TipoControle(i?.tipo || '') === rec.tipo);
       const baseAtual = existentesTipo.reduce((max, i) => {
         const n = Number.parseInt(String(i?.base || i?.mon || 0), 10) || 0;
@@ -365,7 +450,7 @@ async function sincronizarRadar03(novas) {
             Number.parseInt(String(i?.mon || 0), 10) === det.numeroInt &&
             String(i?.link || '') === String(det.link || ''))
         );
-        if (!item) {
+        if (!item && !(det.id || det.link)) {
           item = casa.items.find(i => radar03TipoControle(i?.tipo || '') === det.tipo);
         }
         if (!item) {
@@ -376,15 +461,25 @@ async function sincronizarRadar03(novas) {
         const base = Number.parseInt(String(item.base || baseAtual || 0), 10) || 0;
         item.tipo = det.tipo;
         item.mon = det.numeroInt;
-        item.delta = det.numeroInt === base ? 0 : 1;
-        item.sentido = det.numeroInt === base ? 'bate com o controle' : 'captado individualmente na fonte';
-        item.fluxo = item.delta ? 'nao_consultado' : (item.fluxo || 'revisado');
+        item.delta = det.monitorIncorporado || det.numeroInt === base ? 0 : 1;
+        item.sentido = det.monitorIncorporado
+          ? 'já estava no Monitor; 03 atualizada automaticamente'
+          : (det.numeroInt === base ? 'bate com o controle' : 'captado individualmente na fonte');
+        item.fluxo = det.monitorIncorporado ? 'incorporado' : (item.delta ? 'nao_consultado' : (item.fluxo || 'revisado'));
         item.ementa = det.ementa || item.ementa || '';
         item.link = det.link || item.link || '';
         item.clienteSugestao = det.clienteSugestao || item.clienteSugestao || '';
         item.clienteCitado = Boolean(det.clienteCitado || item.clienteCitado);
         item.clienteCitadoNomes = det.clienteCitadoNomes || item.clienteCitadoNomes || item.clienteSugestao || '';
         item.radar03Id = det.id || item.radar03Id || '';
+        item.monitorCodigo = det.monitorCodigo || item.monitorCodigo || '';
+        item.monitorUrl = det.monitorUrl || item.monitorUrl || '';
+        if (det.monitorIncorporado) {
+          item.base = det.numeroInt;
+          item.mon = det.numeroInt;
+          item.fechadoEm = item.fechadoEm || new Date().toISOString();
+          item.clienteSugestao = item.clienteSugestao || 'Já incorporado no Monitor';
+        }
         item.listaReal03 = true;
       });
     });
@@ -402,7 +497,7 @@ async function sincronizarRadar03(novas) {
     });
 
     const postResp = await fetch(CONTROLE03_STATE_URL, {
-      method: 'POST', headers: radar03AuthHeaders(), body: JSON.stringify({ data }),
+      method: 'POST', headers: radar03AuthHeaders(), body: JSON.stringify({ data, merge_casas: [CASA_RADAR03] }),
     });
     if (!postResp.ok) throw new Error('POST ' + postResp.status);
     console.log('✅ Radar 03 sincronizado: ' + CASA_RADAR03 + ' · ' + resumo.map(item => item.tipo + ' ' + item.numero + '/' + item.ano).join(' | '));
