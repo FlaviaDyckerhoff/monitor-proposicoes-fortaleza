@@ -719,8 +719,7 @@ async function buscarProposicoes() {
   const primeiraResponse = await fetch(primeiraUrl);
 
   if (!primeiraResponse.ok) {
-    console.error(`❌ Erro na API: ${primeiraResponse.status} ${primeiraResponse.statusText}`);
-    return [];
+    throw new Error(`Erro na API: ${primeiraResponse.status} ${primeiraResponse.statusText}`);
   }
 
   const primeiraJson = await primeiraResponse.json();
