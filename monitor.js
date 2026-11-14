@@ -1,3 +1,4 @@
+const lacunas03 = require('./lacunas03');
 const mlPropsPriority = require('./priority_terms');
 
 const FICHA_URL = process.env.FICHA_URL || 'https://doe.monitorlegislativo.com.br/ficha';
@@ -468,6 +469,7 @@ async function sincronizarRadar03(novas) {
         const base = Number.parseInt(String(item.base || baseAtual || 0), 10) || 0;
         item.tipo = det.tipo;
         item.mon = det.numeroInt;
+        item.ano = String(det.ano || item.ano || '');
         item.delta = det.monitorIncorporado || det.numeroInt === base ? 0 : 1;
         item.sentido = det.monitorIncorporado
           ? 'já estava no Monitor; 03 atualizada automaticamente'
@@ -484,6 +486,7 @@ async function sincronizarRadar03(novas) {
         if (det.monitorIncorporado) {
           item.base = det.numeroInt;
           item.mon = det.numeroInt;
+        item.ano = String(det.ano || item.ano || '');
           item.fechadoEm = item.fechadoEm || new Date().toISOString();
           item.clienteSugestao = item.clienteSugestao || 'Já incorporado no Monitor';
         }
@@ -621,7 +624,7 @@ async function enviarEmail(novas) {
     </div>
   `;
 
-  await transporter.sendMail({
+  await lacunas03.sendMail.bind(null, transporter, {casa: CASA_RADAR03, stateUrl: CONTROLE03_STATE_URL, headers: radar03AuthHeaders})({
     from: `"Monitor CMFor" <${EMAIL_REMETENTE}>`,
     to: EMAIL_DESTINO,
     subject: assuntoEmailClienteCitado(novas, `🏛️ Fortaleza: ${novas.length} nova(s) matéria(s) — ${new Date().toLocaleDateString('pt-BR')}`),
